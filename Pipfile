@@ -1,0 +1,13 @@
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+python-binance = "*"
+websocket-client = "*"
+requests = "*"
+clickhouse-driver = "*"
+django = "*"
+
+[dev-packages]
