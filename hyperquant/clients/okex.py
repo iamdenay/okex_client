@@ -127,22 +127,19 @@ class OkexWSConverterV1(WSConverter):
         Endpoint.TRADE: "ok_sub_spot_{symbol}_deals",
         Endpoint.CANDLE: "ok_sub_spot_{symbol}_kline_{interval}",
     }
-        
-    param_value_lookup = {
-        Interval.MIN_1: "1min",
-        Interval.MIN_3: "3min",
-        Interval.MIN_5: "5min",
-        Interval.MIN_15: "15min",
-        Interval.MIN_30: "30min",
-        Interval.HRS_1: "1hour",
-        Interval.HRS_2: "2hhour",
-        Interval.HRS_4: "4hour",
-        Interval.HRS_6: "6hour",
-        Interval.HRS_12: "12hour",
-        Interval.DAY_1: "1day",
-        Interval.WEEK_1: "1week",
-    }
 
+    Interval.MIN_1 = "1min"
+    Interval.MIN_3 = "3min"
+    Interval.MIN_5 = "5min"
+    Interval.MIN_15 = "15min"
+    Interval.MIN_30 = "30min"
+    Interval.HRS_1 = "1hour"
+    Interval.HRS_2 = "2hhour"
+    Interval.HRS_4 = "4hour"
+    Interval.HRS_6 = "6hour"
+    Interval.HRS_12 = "12hour"
+    Interval.DAY_1 = "1day"
+    Interval.WEEK_1 = "1week"
 
     param_lookup_by_class = {
         Trade: [
@@ -154,7 +151,7 @@ class OkexWSConverterV1(WSConverter):
             ParamName.SYMBOL
         ],       
         Candle: [
-            ParamName.TIMESTAMP,
+            ParamName.TIMESTAMP, # No ID in OKEX kline
             ParamName.PRICE_OPEN,
             ParamName.PRICE_HIGH, 
             ParamName.PRICE_LOW, 
@@ -172,35 +169,32 @@ class OkexWSConverterV1(WSConverter):
 
     is_source_in_milliseconds = True
 
-    def generate_subscriptions(self, endpoints, symbols, **params):
-        result = set()
-        params["interval"] = "1min"
-        for endpoint in endpoints:
-            if endpoint in self.symbol_endpoints:
-                if symbols:
-                    for symbol in symbols:
-                        result.add(self._generate_subscription(endpoint, symbol, **params))
-                else:
-                    result.add(self._generate_subscription(endpoint, None, **params))
-            else:
-                result.add(self._generate_subscription(endpoint, **params))
-        return result
-
     def parse(self, endpoint, data):
+        if data["channel"] == "addChannel":
+            # If message is not real data, just response to subscription
+            # Then we don't need to parse it
+            return 
+
         if "deals" in data["channel"]:
             endpoint = Endpoint.TRADE
-        elif "kline" in data["channel"]:
+        elif "kline" in data["channel"]: 
             endpoint = Endpoint.CANDLE
+        else:
+            # For future
+            return
+
         if "data" in data:
+            symbol = ""
             symbol = data["channel"].split("_")
-            symbol = symbol[3] + "_" + symbol[4]
+            symbol = symbol[3] + "_" + symbol[4] 
             data = data["data"]
             if endpoint == Endpoint.CANDLE:
                 for item in data:
                     item[0] = int(item[0])
                     item.append(symbol)
-            elif endpoint == Endpoint.TRADE:
-                 for item in data:
+            elif endpoint == Endpoint.TRADE: 
+                for item in data:
+                    # OKEX doesn't provide TIMESTAMP, so we get it from TIME 
                     now = datetime.datetime.now()
                     hour = int(item[3].split(":")[0])
                     minute = int(item[3].split(":")[1])
@@ -209,8 +203,10 @@ class OkexWSConverterV1(WSConverter):
                     now = now.replace(hour=hour, minute=minute, second=second)
                     item[3] = now.timestamp()*1000
                     item.append(symbol)
-                    
-            
+            else:
+                # For future
+                return
+   
         return super().parse(endpoint, data)
 
 
@@ -222,7 +218,24 @@ class OkexWSClient(WSClient):
         "1": OkexWSConverterV1,
     }
 
-    def inflate(self, data):
+    # hqlip API does not provide previous value for INTERVAL, which we need in run_demo.py
+    # We need to repeat hqlib's solution like in subscribe()
+
+    interval = None 
+    def subscribe(self, endpoints=None, symbols=None, interval=None, **params):
+        self.logger.debug("Previous interval: %s",self.interval)
+        if not interval:
+            interval = self.interval
+        else:
+            self.interval = interval
+        
+        params["interval"] = interval
+
+        super().subscribe(endpoints, symbols, **params)
+
+    # OKEX responds compressed GZip data
+
+    def inflate(self, data): 
         decompress = zlib.decompressobj(
                 -zlib.MAX_WBITS  # see above
         )
@@ -232,27 +245,10 @@ class OkexWSClient(WSClient):
 
     def _on_message(self, message):
         message = self.inflate(message)
-        self.logger.debug("On message: %s", message[:200])
-        # str -> json
-        try:
-            data = json.loads(message)
-        except json.JSONDecodeError:
-            self.logger.error("Wrong JSON is received! Skipped. message: %s", message)
-            return
-        # json -> items
-        result = self._parse(None, data)[0]
+        super()._on_message(message)
 
-        # Process items
-        self._data_buffer = []
-        if result and isinstance(result, list):
-            for item in result:
-                self.on_item_received(item)
-        else:
-            self.on_item_received(result)
-
-        if self.on_data and self._data_buffer:
-            self.on_data(self._data_buffer)
-
+    def _parse(self, endpoint, data):
+        return super()._parse(None,data)[0]
     
     def _send_subscribe(self, subscriptions):
         for channel in subscriptions:
@@ -262,5 +258,5 @@ class OkexWSClient(WSClient):
             }
             self._send(event_data)
 
-        
+    
         
